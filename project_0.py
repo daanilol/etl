@@ -1,12 +1,12 @@
 import json
 import requests
 import pyspark
-from pyspark.sql.functions import col, udf
+from pyspark.sql.functions import col, udf, lit, current_timestamp, concat_ws, trim, datediff, to_timestamp, abs as _abs, when
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, MapType, DateType, TimestampType, IntegerType
-from datetime import date
 
 
-challenge_json = json.loads(requests.get('https://randomuser.me/api/?results=5000&nat=br').text)['results']
+url = 'https://randomuser.me/api/?results=5000&nat=br'
+challenge_json = json.loads(requests.get(url).text)['results']
 
 
 schema = StructType(
@@ -43,54 +43,42 @@ schema = StructType(
 
 df_challenge = spark.createDataFrame(challenge_json, schema)
 
+df_challenge = df_challenge.withColumn('source_url', lit(url))
+df_challenge = df_challenge.withColumn('created_at', current_timestamp())
+df_challenge = df_challenge.withColumn('first_name', df_challenge.name.getItem('first'))\
+    .withColumn('last_name', df_challenge.name.getItem('last'))
 
-@udf(returnType=StringType())
-def ajust_name(x):
-    return x['first'] + " " + x['last']
+df_challenge = df_challenge.withColumn('full_name', concat_ws(' ', df_challenge.first_name, df_challenge.last_name))
+df_challenge = df_challenge.withColumn('street', df_challenge.location.getItem('street'))
 
+df_challenge = df_challenge.withColumn('street_name', df_challenge.street.getItem('name'))\
+    .withColumn('street_number', df_challenge.street.getItem('number'))
 
-@udf(returnType=StringType())
-def get_adress(x):
-    street_name = x['street']['name'].strip()
-    street_number = str(x['street']['number'])
-    return street_name + ", " + street_number + " - " + str(x['postcode']) +  " - " + x['city'] + " - " + x['state'] + " - " + x['country']
+df_challenge = df_challenge.withColumn('address', concat_ws(', ', trim(df_challenge.street_name), df_challenge.street_number))
 
+df_challenge = df_challenge.withColumn('city', df_challenge.location.getItem('city'))\
+    .withColumn('state', df_challenge.location.getItem('state'))\
+    .withColumn('country', df_challenge.location.getItem('country'))
 
-@udf(returnType=StringType())
-def get_date(x):
-    return x['date'][:10]
+df_challenge = df_challenge.withColumn('city_state_country', concat_ws(' - ', df_challenge.city, df_challenge.state, df_challenge.country))
+df_challenge = df_challenge.withColumn('complete_address', concat_ws(' - ', df_challenge.address, df_challenge.city_state_country))
 
+df_challenge = df_challenge.withColumn('dob_date', df_challenge.dob.getItem('date'))\
+    .withColumn('registered_date', df_challenge.registered.getItem('date'))
 
-@udf(returnType=IntegerType())
-def get_age(x):
-    today = date.today()
-    return int(today.strftime("%Y")) - int(x[:4])
+df_challenge = df_challenge.withColumn("dob_date", to_timestamp("dob_date"))\
+    .withColumn("registered_date", to_timestamp("registered_date"))
 
+df_challenge = df_challenge.withColumn('current_timestamp', current_timestamp())
+df_challenge = df_challenge.withColumn("diff_in_years", datediff(col("dob_date"), col("current_timestamp"))/365.25)
+df_challenge = df_challenge.withColumn("age", df_challenge.diff_in_years.cast(IntegerType()))
+df_challenge = df_challenge.withColumn('age', _abs(col('age')))
 
-@udf(returnType=StringType())
-def get_category(x):
-    if x > 0 and x < 12:
-        return 'child'
-    elif x > 12 and x <= 18:
-        return 'adolescent'
-    elif x > 18:
-        return 'adult'
+df_challenge = df_challenge.withColumn('age_group', when((col('age') >= 12) & (col('age') <= 18), 'adolescent')\
+                        .when((col('age') >= 0) & (col('age') < 12), 'child')\
+                        .when((col('age') > 18), 'adult'))
 
+df_challenge = df_challenge.withColumn('purpose_of_use', when(col('age_group') == 'adult', 'marketing')\
+                        .when((col('age_group') == 'child') | (col('age_group') == 'adolescent'), 'risks'))
 
-@udf(returnType=StringType())
-def purpose_of_use(x):
-    if x == 'adult':
-        return 'marketing'
-    if x == 'adult' or 'adolescent':
-        return 'risk'
-
-
-df_challenge = df_challenge.withColumn('name', ajust_name(col('name')))
-df_challenge = df_challenge.withColumn('complete_address', get_adress(col('location')))
-df_challenge = df_challenge.withColumn('dob', get_date(col('dob')))
-df_challenge = df_challenge.withColumn('registered', get_date(col('registered')))\
-                                      .select('name', 'gender', 'email', 'dob', 'registered', 'phone', 'cell', 'complete_address')
-
-df_challenge = df_challenge.withColumn('years_old', get_age(col('dob')))
-df_challenge = df_challenge.withColumn('age_group', get_category(col('years_old')))
-df_challenge = df_challenge.withColumn('purpose_of_use', purpose_of_use(col('age_group')))
+df_challenge = df_challenge.select('full_name', 'gender', 'age', 'email', 'phone', 'cell', 'dob_date', 'registered_date', 'complete_address', 'age_group', 'purpose_of_use', 'source_url')
