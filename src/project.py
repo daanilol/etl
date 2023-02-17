@@ -1,47 +1,33 @@
+from src.schema import schema
 import json
 import requests
-import pyspark
-from pyspark.sql.functions import col, udf, lit, current_timestamp, concat_ws, trim, datediff, to_timestamp, abs as _abs, when
-from pyspark.sql.types import StructType, StructField, StringType, ArrayType, MapType, DateType, TimestampType, IntegerType
+from pyspark.sql.functions import col, lit, current_timestamp, concat_ws, trim, datediff, to_timestamp, abs as _abs, when
+from pyspark.sql.types import IntegerType
+from pyspark import SparkConf
 
+##############################
+import os
+import sys
+from pyspark.sql import SparkSession
+
+os.environ['PYSPARK_PYTHON'] = 'python'
+os.environ['PYSPARK_DRIVER_PYTHON'] = 'python3'
+
+spark = SparkSession.builder.getOrCreate()
+spark.conf.set("spark.pyspark.python", "c:/Users/case/projetos/modelusers/venv/Scripts/python")
+print(spark.sparkContext.getConf().get("spark.pyspark.python"))
+##############################
+
+# COMMAND ----------
 
 url = 'https://randomuser.me/api/?results=5000&nat=br'
 challenge_json = json.loads(requests.get(url).text)['results']
 
-
-schema = StructType(
-    [
-        StructField('gender', StringType()),
-        StructField('name', MapType(StringType(), StringType())),
-        StructField('location', StructType(
-            [
-                StructField('street', StructType(
-                    [
-                        StructField('number', IntegerType()),
-                        StructField('name', StringType())
-                    ])),
-                StructField('city', StringType()),
-                StructField('state', StringType()),
-                StructField('country', StringType()),
-                StructField('postcode', IntegerType()),
-                StructField('coordinates', StructType(
-                    [
-                        StructField('latitude', StringType()),
-                        StructField('longitude', StringType())
-                    ])),
-                StructField('timezone', StringType()),
-            ])),
-        StructField('email', StringType()),
-        StructField('dob', MapType(StringType(), StringType())),
-        StructField('registered', MapType(StringType(), StringType())),
-        StructField('phone', StringType()),
-        StructField('cell', StringType()),
-        StructField('nat', StringType()),
-        
-    ])
-
+# COMMAND ----------
 
 df_challenge = spark.createDataFrame(challenge_json, schema)
+
+# COMMAND ----------
 
 df_challenge = df_challenge.withColumn('source_url', lit(url))
 df_challenge = df_challenge.withColumn('created_at', current_timestamp())
@@ -82,3 +68,4 @@ df_challenge = df_challenge.withColumn('purpose_of_use', when(col('age_group') =
                         .when((col('age_group') == 'child') | (col('age_group') == 'adolescent'), 'risks'))
 
 df_challenge = df_challenge.select('full_name', 'gender', 'age', 'email', 'phone', 'cell', 'dob_date', 'registered_date', 'complete_address', 'age_group', 'purpose_of_use', 'source_url')
+
